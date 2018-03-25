@@ -1,0 +1,220 @@
+DATA_SEG segment
+	infname	 db 40,40 dup (?)				;input file name
+	outfname db 40,40 dup (?)				;output file name
+	bufin	 db  4096 dup ('$') 				;4K input buffer
+	bufout 	 db 4096 dup ('$') 				;4K output buffer
+	str0	 db 'file input:','$'			;try to get the input file name 		
+	str1	 db 'file output aim:','$'			       ;try to get the output/target file name
+	str2	 db 'Start send now?',0dh,0ah,'$'         ;get the signal to start sending
+	totaltime db  'The total time is min:sec:persec: ', '$'  ;print the total time for transition
+	filein	 dw 0                           			;record the current pointer position inner the input file
+	fileout  dw 0 							;record the current pointer position inner the output file
+	minute	 db 0 						;time minute
+	second   db 0 							;time second
+	totalw   dw 0 							;the total word you read
+	crlf	 db 0dh,0ah,'$'					;the line feed
+	persec   db 0							;time the percentage of second
+	error db 'EORROR!' ,0dh,0ah,'$'			;error
+DATA_SEG ends
+
+CODE_SEG segment
+assume cs:CODE_SEG,ds:DATA_SEG,es:DATA_SEG
+
+main proc far
+
+	;initialize the register
+	mov dx,03fbh
+	mov al,10001010b
+	out dx,al
+	mov dx,03f8h							;set the BAUD=03f8h=4800
+	mov al,00011000b						
+	out dx,al
+	inc dx
+	mov al,0
+	out dx,al
+	mov dx,03fbh
+	mov al,0eh							;00001110b,7-bits data, 2-bits stop, odd parity
+        out dx,al
+	inc dx
+	mov al,10h							;set the MODEM loopback bit =1,自发自收
+	out dx,al
+
+	mov ax,DATA_SEG
+	mov ds,ax
+
+	;sure the input file
+	lea dx,str0							;=mov dx,offset str0 to get the input file name
+	mov ah,00001001b
+	int 21h
+	lea dx,infname						;to store the input file name
+	mov ah,0ah
+	int 21h
+	lea dx,crlf							;换行符
+	mov ah,09h
+	int 21h
+	mov cl,infname+1						;total bytes we get now
+	mov ch,0								
+	mov si,cx								;store the total bytes
+	mov infname[si+2],0					;add the terminator 添加结束符0
+	lea dx,infname+2						;store the file name
+	mov ah,3dh
+	mov al,0
+	int 21h
+	mov filein,ax							;get the current file pointer position inner the input file
+
+	
+	lea dx,str1							;=mov dx,offset str1 to get the output/target file name
+	mov ah,09h
+	int 21h
+	lea dx,outfname						;to store the output file name
+	mov ah,0ah
+	int 21h
+	lea dx,crlf							;换行符
+	mov ah,09h
+	int 21h
+	mov cl,outfname+1					;total bytes we get now
+	mov ch,0
+	mov si,cx								;store the total bytes
+	mov outfname[si+2],0					;add the terminator 添加结束符0
+
+       mov ah,3ch							;根据目标文件创建文件用于存放输出内容
+	mov cx,0
+	lea dx,outfname+2
+	int 21h
+	mov fileout,ax							;get the current file pointer position inner the output/target file
+
+	lea dx,str2							;按键后启动发送，提示用户按键
+	mov ah,09h
+	int 21h								
+	mov ah,1
+	int 21h								
+	mov ah,2ch							;利用AH=2CH，发送开始前记录时间
+	int 21h
+	mov ah,2ch							;发送完后再记录时间
+	int 21h
+	mov second,dh						;记录秒
+	mov minute,cl							;记录分
+	mov persec,dl							;记录百分秒
+read:
+	mov bx,filein  							;读取文件，文件内指针移动到记录到的位置     
+	lea dx,bufin      			                      ; 调用读取内容存放的buffer				
+	mov cx,4096							;buffer大小为4K
+	mov ah,3fh
+	int 21h
+	
+	mov totalw,ax     						;记录总共读取到的字节数
+	cmp totalw,0							;比较，看是否为0
+	jbe disp								;显示
+
+	mov cx,totalw							;读取了一定字节，记录
+	lea di,bufin							;调取读取的缓冲区
+	lea si,bufout							;调取发送的缓冲区
+
+send:
+	mov dx,03fdh       						
+	in  al,dx         							
+	test al,20h   							;判断com1所使用的发送寄存器是否为空（即可用）
+	jz  send								;为空，发送
+	mov al,[di]							;调用读取的缓冲区
+	mov dx,03f8h      
+	out dx,al
+	inc di	
+	mov dx,03fdh       
+	in  al,dx         
+	test al,01h   							;判断com1接受数据的寄存器是否可用     
+	jz  send								;可用发送数据
+	mov dx,03f8h
+	in  al,dx
+	mov [si],al        						;调用发送的缓冲区
+	inc si
+	loop send							;循环直至发送完毕
+
+write:
+	mov bx,fileout      						;写文件，将文件内指针移动到上一次记录的写位置
+	lea dx,bufout  						;调用发送文件的内容的缓冲区
+	mov cx,totalw							;cx的值为总共的字节数
+	mov ah,40h
+	int 21h
+	
+	jmp read								;目标文件开始从缓冲区中读入
+	
+disp:									;显示模块
+	lea dx,totaltime
+	mov ah,09h
+	int 21h
+	mov ah,2ch							;调用记录的系统时间
+	int 21h
+
+	cmp persec,dl							;百分秒和dl比较
+	jbe T1								;相等则跳转至t1
+	add dl,100							;dx低位+100，高位减一
+	sub dh,1
+
+T1:
+	sub dl,persec
+	mov persec,dl
+	cmp second,dh						;秒比较，否则高位+60，低位-1
+	jbe T2								;相等跳转至T2
+	add dh,60
+	sub cl,1
+T2:
+	sub dh,second
+	mov second,dh
+	cmp minute,cl							;分钟的比较
+	jbe T3
+	add minute,60
+
+T3:
+	sub cl,minute
+	mov minute,cl
+	mov dl,minute
+	push dx								;记录了分秒百分秒
+	call tcost								;显示分
+	mov ah,02h
+	mov dl,':'
+	int 21h
+	mov dl,second
+	call tcost								;显示秒
+	mov ah,02h
+	mov dl,':'
+	int 21h
+	pop dx
+	mov dl,persec
+	call tcost								;显示百分秒
+	mov dl,08h
+	mov ah,2h
+	int 21h
+
+	lea dx,crlf
+	mov ah,09h
+	int 21h
+
+	mov ah,3eh    ;
+	mov bx,filein
+	int 21h
+	mov ah,3eh
+	mov bx,fileout
+	int 21h
+exit:
+	mov ax,4c00h
+	int 21h
+
+tcost proc								;显示时间				
+	and dx,0ffh
+	mov ax,dx
+	mov bl,10d
+	div bl
+	mov bx,ax
+	add bh,30h
+	add bl,30h
+	mov dl,bl
+	mov ah,2h
+	int 21h
+	mov dl,bh
+	mov ah,2h
+	int 21h
+	ret
+tcost endp
+main endp	
+CODE_SEG ends
+end main
